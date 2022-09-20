@@ -7,31 +7,30 @@ import org.apache.lucene.morphology.russian.RussianLuceneMorphology;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
 
 public class Lemmitisator {
-    private List<String> rusLemms;
-    private List<String> engLemms;
+    private List<String> rusLemmas;
+    private List<String> engLemmas;
 
-    public List<String> getRusLemms() {
-        return rusLemms;
+    public List<String> getRusLemmas() {
+        return rusLemmas;
     }
 
-    public void setRusLemms(List<String> rusLemms) {
-        this.rusLemms = rusLemms;
+    public void setRusLemmas(List<String> rusLemmas) {
+        this.rusLemmas = rusLemmas;
     }
 
-    public List<String> getEngLemms() {
-        return engLemms;
+    public List<String> getEngLemmas() {
+        return engLemmas;
     }
 
-    public void setEngLemms(List<String> engLemms) {
-        this.engLemms = engLemms;
+    public void setEngLemmas(List<String> engLemmas) {
+        this.engLemmas = engLemmas;
     }
 
     public List<String> getRusLemm(String text) throws IOException {
         LuceneMorphology russianLuceneMorphology = new RussianLuceneMorphology();
-        rusLemms = new ArrayList<>();
+        rusLemmas = new ArrayList<>();
         text = text.toLowerCase();
         String[] words = text.split("[^а-я]+");
         for (String word : words){
@@ -42,16 +41,16 @@ public class Lemmitisator {
                     !russianLuceneMorphology.getMorphInfo(word).toString().contains("ЧАСТ"))
             {
                 List<String> wordBaseForms = russianLuceneMorphology.getNormalForms(word);
-                wordBaseForms.forEach(s -> rusLemms.add(s));
+                wordBaseForms.forEach(s -> rusLemmas.add(s));
             }
         }
 
-        return rusLemms;
+        return rusLemmas;
     }
 
     public List<String> getEngLemm(String text) throws IOException {
         LuceneMorphology englishLuceneMorphology = new EnglishLuceneMorphology();
-        engLemms = new ArrayList<>();
+        engLemmas = new ArrayList<>();
         text = text.toLowerCase();
         String[] words = text.split("[^a-z]+");
         for (String word : words){
@@ -62,9 +61,9 @@ public class Lemmitisator {
                     !englishLuceneMorphology.getMorphInfo(word).toString().contains("ЧАСТ"))
             {
                 List<String> wordBaseForms = englishLuceneMorphology.getNormalForms(word);
-                wordBaseForms.forEach(s -> engLemms.add(s));
+                wordBaseForms.forEach(s -> engLemmas.add(s));
             }
         }
-        return engLemms;
+        return engLemmas;
     }
 }

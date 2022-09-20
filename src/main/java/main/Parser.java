@@ -1,16 +1,15 @@
 package main;
 
 import main.model.*;
+import main.repository.IndexRepository;
+import main.repository.LemmaRepository;
+import main.repository.PageRepository;
+import main.repository.SiteRepository;
+import org.jsoup.HttpStatusException;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.jpa.repository.support.JpaRepositoryFactory;
-import org.springframework.data.jpa.repository.support.SimpleJpaRepository;
-import org.springframework.data.repository.core.support.RepositoryFactorySupport;
-
-import javax.persistence.EntityManager;
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -22,46 +21,21 @@ import java.util.regex.Pattern;
 public class Parser extends RecursiveAction{
 
     private final String url;
-
     private String subpageUrl;
-
     private String path = "/";
-
-    private int code;
-
-    private Set<String> hrefElements;
-
     private List<String> paths;
-
-    private List<Page> pages = new ArrayList<>();
-
+    private PageRepository pageRepository;
+    private LemmaRepository lemmaRepository;
+    private IndexRepository indexRepository;
     private Field title;
-
     private Field body;
-
     private Lemmitisator lemmitisator = new Lemmitisator();
-
-    private List<String> titleContent;
-
-    private List<String> bodyContent;
-
-    private List<Lemma> lemmsFromTitle;
-
-    private List<Lemma> lemmsFromBody;
-
-    private float rank;
-
+    private List<Page> pages = new ArrayList<>();
     private List<Lemma> lemmaList = new ArrayList<>();
-
     private List<Search_index> search_indexList = new ArrayList<>();
-
-    public List<Search_index> getSearch_indexList() {
-        return search_indexList;
-    }
-
-    public void setSearch_indexList(List<Search_index> search_indexList) {
-        this.search_indexList = search_indexList;
-    }
+    private List<Site> sites;
+    private SiteRepository siteRepository;
+    private String errorStatus;
 
     public List<Lemma> getLemmaList() {
         return lemmaList;
@@ -79,7 +53,11 @@ public class Parser extends RecursiveAction{
         return pages;
     }
 
-    public Parser(String URL) {
+    public List<Search_index> getSearch_indexList() {
+        return search_indexList;
+    }
+
+    public Parser(String URL, PageRepository pageRepository, LemmaRepository lemmaRepository, IndexRepository indexRepository, List<Site> sites, SiteRepository siteRepository) {
         this.url = URL;
         subpageUrl = URL;
 
@@ -92,133 +70,167 @@ public class Parser extends RecursiveAction{
         body.setName("body");
         body.setSelector("body");
         body.setWeight(0.8f);
-
+        this.pageRepository = pageRepository;
+        this.lemmaRepository = lemmaRepository;
+        this.indexRepository = indexRepository;
+        this.sites = sites;
+        this.siteRepository = siteRepository;
     }
 
     public void subpageUrlParse() throws IOException {
-
-        Document doc = Jsoup.connect(url)
-                .userAgent("Mozilla/5.0 (Windows; U; WindowsNT 5.1; en-US; rv1.8.1.6) Gecko/20070725 Firefox/2.0.0.6")
-                .referrer("http://www.google.com")
-                .get();
-        hrefElements = new HashSet<>();
-        paths = new ArrayList<>();
-        Elements elements = doc.getElementsByTag("a");
-        for (Element element : elements){
-            if (element.attr("href").matches("/\\S+")){
-                hrefElements.add(element.attr("href"));
+        Set<String> hrefElements = new HashSet<>();
+        try {
+            Document doc = Jsoup.connect(url)
+                    .userAgent("Mozilla/5.0 (Windows; U; WindowsNT 5.1; en-US; rv1.8.1.6) Gecko/20070725 Firefox/2.0.0.6")
+                    .referrer("http://www.google.com")
+                    .get();
+            paths = new ArrayList<>();
+            Elements elements = doc.getElementsByTag("a");
+            for (Element element : elements){
+                if (element.attr("href").matches("/\\S+")){
+                    hrefElements.add(element.attr("href"));
+                }
             }
+
+            paths.addAll(hrefElements);
+            Collections.sort(paths);
+        }catch (HttpStatusException ex){
+           errorStatus = "Страница сайта недоступна. " + "Статус: " + ex.getStatusCode();
+           for (Site site : sites){
+               if (site.getUrl().contains(url)){
+                   site.setLast_error(errorStatus);
+                   siteRepository.saveAndFlush(site);
+               }
+           }
         }
-        paths.addAll(hrefElements);
-        Collections.sort(paths);
     }
 
+    public String getUrl() {
+        return url;
+    }
 
     public void parse() throws IOException {
-        bodyContent = new ArrayList<>();
-        titleContent = new ArrayList<>();
-        lemmsFromTitle = new ArrayList<>();
-        lemmsFromBody = new ArrayList<>();
-
-        Document doc = Jsoup.connect(subpageUrl)
-                .userAgent("Mozilla/5.0 (Windows; U; WindowsNT 5.1; en-US; rv1.8.1.6) Gecko/20070725 Firefox/2.0.0.6")
-                .referrer("http://www.google.com")
-                .get();
+        List<String> bodyContent = new ArrayList<>();
+        List<String> titleContent = new ArrayList<>();
+        List<Lemma> lemmsFromTitle = new ArrayList<>();
+        List<Lemma> lemmsFromBody = new ArrayList<>();
+        float rank;
 
         URL urlForHttp = new URL(subpageUrl);
         HttpURLConnection connection = (HttpURLConnection)urlForHttp.openConnection();
         connection.setRequestMethod("GET");
         connection.connect();
-        code = connection.getResponseCode();
+        int code = connection.getResponseCode();
+        try {
+            Document doc = Jsoup.connect(subpageUrl)
+                    .userAgent("Mozilla/5.0 (Windows; U; WindowsNT 5.1; en-US; rv1.8.1.6) Gecko/20070725 Firefox/2.0.0.6")
+                    .referrer("http://www.google.com")
+                    .get();
+            matcher();
 
-        matcher();
+            Page page = new Page();
+            page.setPath(path);
+            page.setCode(code);
+            page.setContent(doc.toString());
+            page.setSite_id(findSiteIdByUrl());
+            pages.add(page);
+            pageRepository.save(page);
 
-        Page page = new Page();
-        page.setPath(path);
-        page.setCode(code);
-        page.setContent(doc.toString());
-        pages.add(page);
+            getTextForLemms(doc,title,titleContent);
+            getTextForLemms(doc,body,bodyContent);
 
-        Elements titleEl = doc.select(title.getSelector());
-        for (Element element : titleEl){
-            String content = htmlToText(element.html());
-            content = contentFormatting(content);
-            titleContent.addAll(lemmitisator.getRusLemm(content));
-            titleContent.addAll(lemmitisator.getEngLemm(content));
-        }
-        Elements bodyEl = doc.select(body.getSelector());
-        for (Element element : bodyEl){
-            String content = htmlToText(element.html());
-            content = contentFormatting(content);
-            bodyContent.addAll(lemmitisator.getRusLemm(content));
-            bodyContent.addAll(lemmitisator.getEngLemm(content));
-        }
+            textToLemma(titleContent, lemmsFromTitle);
+            textToLemma(bodyContent, lemmsFromBody);
 
-        for (String s : titleContent){
-            Lemma lemma = new Lemma();
-            lemma.setLemma(s);
-            if (lemmsFromTitle.isEmpty()){
-                lemma.setFrequency(1);
-                lemmsFromTitle.add(lemma);
-            }
-            if (lemmaContains(lemma, lemmsFromTitle)){
-                updateFrequency(lemma, lemmsFromTitle);
-            }else {
-                lemma.setFrequency(1);
-                lemmsFromTitle.add(lemma);
-            }
-        }
-
-        for (String s: bodyContent){
-            Lemma lemma = new Lemma();
-            lemma.setLemma(s);
-            if (lemmsFromBody.isEmpty()){
-                lemma.setFrequency(1);
-                lemmsFromBody.add(lemma);
-            }
-            if (lemmaContains(lemma, lemmsFromBody)){
-                updateFrequency(lemma, lemmsFromBody);
-            }else {
-                lemma.setFrequency(1);
-                lemmsFromBody.add(lemma);
-            }
-        }
-
-        for (Lemma lemma : lemmsFromTitle){
-            if(lemmaContains(lemma, lemmsFromBody)) {
-                rank = (lemma.getFrequency() * 1.0f) + (frequencyFromBody(lemma) * 0.8f);
-                lemma.setFrequency(frequencyAddition(lemma, lemmsFromBody));
+            for (Lemma lemma : lemmsFromTitle){
+                if(lemmaContains(lemma, lemmsFromBody)) {
+                    rank = (lemma.getFrequency() * 1.0f) + (frequencyFromBody(lemma, lemmsFromBody) * 0.8f);
+                    lemma.setFrequency(frequencyAddition(lemma, lemmsFromBody));
+                    lemma.setSite_id(findSiteIdByUrl());
+                    lemmaList.add(lemma);
+                    lemmaRepository.save(lemma);
+                    Search_index search_index = new Search_index();
+                    search_index.setLemma_id(lemma.getId());
+                    search_index.setPage_id(page.getId());
+                    search_index.setRating(rank);
+                    search_indexList.add(search_index);
+                    indexRepository.save(search_index);
+                    continue;
+                }
+                rank = (lemma.getFrequency() * 1.0f);
+                lemma.setSite_id(findSiteIdByUrl());
                 lemmaList.add(lemma);
+                lemmaRepository.save(lemma);
                 Search_index search_index = new Search_index();
                 search_index.setLemma_id(lemma.getId());
                 search_index.setPage_id(page.getId());
                 search_index.setRating(rank);
                 search_indexList.add(search_index);
-                continue;
+                indexRepository.save(search_index);
             }
-            rank = (lemma.getFrequency() * 1.0f) + 0.8f;
-            lemmaList.add(lemma);
-            Search_index search_index = new Search_index();
-            search_index.setLemma_id(lemma.getId());
-            search_index.setPage_id(page.getId());
-            search_index.setRating(rank);
-            search_indexList.add(search_index);
-        }
-        for (Lemma lemma : lemmsFromBody){
-            if (lemmaContains(lemma,lemmaList)){
-                continue;
+            for (Lemma lemma : lemmsFromBody){
+                if (lemmaContains(lemma,lemmaList)){
+                    continue;
+                }
+                rank = (lemma.getFrequency() * 0.8f);
+                lemma.setSite_id(findSiteIdByUrl());
+                lemmaList.add(lemma);
+                lemmaRepository.save(lemma);
+                Search_index search_index = new Search_index();
+                search_index.setLemma_id(lemma.getId());
+                search_index.setPage_id(page.getId());
+                search_index.setRating(rank);
+                search_indexList.add(search_index);
+                indexRepository.save(search_index);
             }
-            rank = 1.0f + (lemma.getFrequency() * 0.8f);
-            lemmaList.add(lemma);
-            Search_index search_index = new Search_index();
-            search_index.setLemma_id(lemma.getId());
-            search_index.setPage_id(page.getId());
-            search_index.setRating(rank);
-            search_indexList.add(search_index);
+        }catch (HttpStatusException ex){
+            errorStatus = "Одна из страниц сайта недоступна. " + "Статус: " + ex.getStatusCode();
+            for (Site site : sites){
+                if (site.getUrl().contains(url)){
+                    site.setLast_error(errorStatus);
+                    siteRepository.saveAndFlush(site);
+                }
+            }
         }
     }
 
-    public int frequencyFromBody(Lemma lemma){
+    public int findSiteIdByUrl(){
+        for (Site site : sites){
+            if (url.contains(site.getUrl())){
+                return site.getId();
+            }
+        }
+        return 0;
+    }
+
+    public void getTextForLemms(Document doc, Field field, List<String> list) throws IOException {
+        Elements el = doc.select(field.getSelector());
+        for (Element element : el){
+            String content = htmlToText(element.html());
+            content = contentFormatting(content);
+            list.addAll(lemmitisator.getRusLemm(content));
+            list.addAll(lemmitisator.getEngLemm(content));
+        }
+    }
+
+    public void textToLemma(List<String> content,List<Lemma> lemms){
+        for (String s : content){
+            Lemma lemma = new Lemma();
+            lemma.setLemma(s);
+            if (lemms.isEmpty()){
+                lemma.setFrequency(1);
+                lemms.add(lemma);
+            }
+            if (lemmaContains(lemma, lemms)){
+                updateFrequency(lemma, lemms);
+            }else {
+                lemma.setFrequency(1);
+                lemms.add(lemma);
+            }
+        }
+    }
+
+    public int frequencyFromBody(Lemma lemma, List<Lemma> lemmsFromBody){
         for (Lemma l : lemmsFromBody){
             if (l.getLemma().contains(lemma.getLemma())){
                 return l.getFrequency();
@@ -295,6 +307,12 @@ public class Parser extends RecursiveAction{
                 }else {
                     subpageUrl = url + paths.get(i);
                     parse();
+                }
+            }
+            for (Site site: sites){
+                if (site.getUrl().contains(url)){
+                    site.setStatus(SiteStatus.INDEXED.toString());
+                    site.setStatus_time(new Date());
                 }
             }
         } catch (IOException e) {
